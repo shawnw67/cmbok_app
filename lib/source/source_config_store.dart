@@ -17,6 +17,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/settings_service.dart';
+import 'cms1_crypto.dart';
 import 'source_definition.dart';
 
 void _log(String message) {
@@ -60,7 +61,19 @@ class SourceConfigStore {
       final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/$_kDocFileName');
       if (await file.exists()) {
-        final raw = await file.readAsString();
+        var raw = await file.readAsString();
+        // 兼容直接把云端密文文件放进文档目录：识别 CMS1 并解密成明文。
+        final decrypted = await Cms1Crypto.tryDecrypt(raw);
+        if (decrypted != null) {
+          raw = decrypted;
+          _log('文档目录配置为 CMS1 密文，已解密');
+          // 顺手回写明文：后续启动免解密，离线也可用。
+          try {
+            await file.writeAsString(raw);
+          } catch (e) {
+            _log('密文归一化回写失败（忽略）: $e');
+          }
+        }
         final parsed = SourceConfigFile.fromJson(
           jsonDecode(raw) as Map<String, dynamic>,
         );
@@ -105,22 +118,33 @@ class SourceConfigStore {
   /// 读用户配置的云端 URL（[SettingsService.sourceRepoUrl]）：为空返回 null（不拉取，沿用本地）。
   /// 非空则 Dio GET -> 容错解析为 SourceConfigFile -> 空则返回 null -> 否则 saveLocal 并返回 defs。
   /// 失败返回 null（保留本地），不抛错给上层（启动后台调用）。
+  ///
+  /// 同时支持两种加密形态：地址本身是 CMS1 密文（解出真实 URL），
+  /// 或地址返回的内容是 CMS1 密文（先解密再当 JSON 解析）。
   Future<List<SourceDefinition>?> fetchRemote() async {
-    final url = SettingsService().sourceRepoUrl.trim();
+    var url = SettingsService().sourceRepoUrl.trim();
     if (url.isEmpty) {
       _log('未配置云端仓库地址，跳过远端拉取');
       return null;
     }
+    // 地址本身可能是 CMS1 密文（云端只下发密文地址），先解出真实 URL。
+    final plainUrl = await Cms1Crypto.tryDecrypt(url);
+    if (plainUrl != null) url = plainUrl.trim();
     try {
       final dio = Dio(
         BaseOptions(
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 15),
-          responseType: ResponseType.json,
+          // 统一按文本取，密文/JSON 都拿到原始字符串，再自行判定
+          responseType: ResponseType.plain,
         ),
       );
       final res = await dio.get<dynamic>(url);
-      final cfg = _asMap(res.data);
+      final body = res.data;
+      // 返回体若是 CMS1 密文，先解密成 JSON 文本
+      final decrypted = body is String ? await Cms1Crypto.tryDecrypt(body) : null;
+      if (decrypted != null) _log('云端 sources.json 为 CMS1 密文，已解密');
+      final cfg = _asMap(decrypted ?? body);
       if (cfg == null) {
         _log('云端 sources.json 解析失败（非 JSON Map）: $url');
         return null;

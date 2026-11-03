@@ -36,6 +36,8 @@ dependencies:
   cupertino_icons: ^1.0.6
   dio: ^5.4.0
   encrypt: ^5.0.3
+  # pointycastle：AES-256-GCM（CMS1 源配置密文解密，见 lib/source/cms1_crypto.dart）
+  pointycastle: ^3.9.1
   cached_network_image: ^3.3.1
   # flutter_cache_manager/http：自定义图片缓存 HttpFileService（设浏览器 UA，
   # 避免 dart:io 跨域重定向 UA 退化为 Dart 默认被 CDN 拦 403）
